@@ -142,6 +142,24 @@ export async function setEntryRead(id: string, read: boolean): Promise<void> {
   await complete(transaction);
 }
 
+export async function markFeedRead(feedId: string): Promise<number> {
+  const database = await openDatabase();
+  const transaction = database.transaction("entries", "readwrite");
+  const store = transaction.objectStore("entries");
+  const index = store.index("byFeedPublishedKey");
+  const range = IDBKeyRange.bound([feedId, 0, ""], [feedId, MAX_TIME, "\uffff"]);
+  const entries = await request<Entry[]>(index.getAll(range));
+  let updated = 0;
+  for (const entry of entries) {
+    if (!entry.read) {
+      store.put({ ...entry, read: true });
+      updated += 1;
+    }
+  }
+  await complete(transaction);
+  return updated;
+}
+
 export function retainNewest<T extends { publishedAt: number; id: string }>(entries: T[], limit = MAX_ENTRIES_PER_FEED): T[] {
   return [...entries]
     .sort((left, right) => right.publishedAt - left.publishedAt || right.id.localeCompare(left.id))

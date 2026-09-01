@@ -2,8 +2,8 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import "fake-indexeddb/auto";
 import { describe, expect, it } from "vitest";
-import { createFeed, getEntry, listEntries, retainNewest, saveEntries, setEntryRead } from "../src/lib/database";
-import { FeedParseError, parseImport } from "../src/lib/feed-parser";
+import { createFeed, getEntry, listEntries, markFeedRead, retainNewest, saveEntries, setEntryRead } from "../src/lib/database";
+import { FeedParseError, parseImport, serializeOpml } from "../src/lib/feed-parser";
 
 const fixture = (name: string) => readFile(resolve(import.meta.dirname, "fixtures", name), "utf8");
 
@@ -16,7 +16,8 @@ describe("parseImport", () => {
     expect(imported.feed).toMatchObject({
       title: "City Notes",
       siteUrl: "https://notes.example/",
-      selfUrl: "https://notes.example/feed.xml"
+      selfUrl: "https://notes.example/feed.xml",
+      iconUrl: "https://notes.example/images/channel-icon.png"
     });
     expect(imported.feed.entries).toHaveLength(1);
     expect(imported.feed.entries[0]).toMatchObject({
@@ -49,6 +50,12 @@ describe("parseImport", () => {
     });
   });
 
+  it("uses RSS channel thumbnails when no channel image is present", () => {
+    const imported = parseImport(`<?xml version="1.0"?><rss xmlns:media="http://search.yahoo.com/mrss/"><channel><title>Thumbs</title><media:thumbnail url="https://thumbs.example/icon.jpg" /><item><guid>1</guid><title>One</title></item></channel></rss>`);
+
+    expect(imported).toMatchObject({ kind: "feed", feed: { iconUrl: "https://thumbs.example/icon.jpg" } });
+  });
+
   it("walks nested OPML and removes duplicate feed URLs", async () => {
     const imported = parseImport(await fixture("sample.opml"));
 
@@ -58,6 +65,22 @@ describe("parseImport", () => {
       { title: "City Notes", url: "https://notes.example/feed.xml", siteUrl: "https://notes.example/" },
       { title: "Signal Field", url: "https://field.example/atom.xml", siteUrl: undefined }
     ]);
+  });
+
+  it("exports remote subscriptions as portable OPML and excludes local snapshots", () => {
+    const exported = serializeOpml([
+      { title: "Design & <Code>", url: "https://design.example/feed?x=1&y=2", siteUrl: "https://design.example/" },
+      { title: "Imported snapshot" }
+    ]);
+    const imported = parseImport(exported);
+
+    expect(exported).toContain('text="Design &amp; &lt;Code&gt;"');
+    expect(exported).toContain('xmlUrl="https://design.example/feed?x=1&amp;y=2"');
+    expect(exported).not.toContain("Imported snapshot");
+    expect(imported).toEqual({
+      kind: "opml",
+      subscriptions: [{ title: "Design & <Code>", url: "https://design.example/feed?x=1&y=2", siteUrl: "https://design.example/" }]
+    });
   });
 
   it("rejects malformed and unsupported XML", () => {
@@ -118,6 +141,22 @@ describe("local entry storage", () => {
       title: "Updated",
       content: "Fresh content",
       read: true
+    });
+  });
+
+  it("marks only the selected feed's unread entries as read", async () => {
+    const { feed } = await createFeed({ title: "Mark read", url: "https://mark-read.example/feed.xml" });
+    const { feed: otherFeed } = await createFeed({ title: "Other feed", url: "https://other.example/feed.xml" });
+    await saveEntries(feed.id, [
+      { externalId: "one", title: "One", content: "", publishedAt: 2 },
+      { externalId: "two", title: "Two", content: "", publishedAt: 1 }
+    ]);
+    await saveEntries(otherFeed.id, [{ externalId: "three", title: "Three", content: "", publishedAt: 3 }]);
+
+    await expect(markFeedRead(feed.id)).resolves.toBe(2);
+    await expect(listEntries({ feedId: feed.id, unreadOnly: true })).resolves.toMatchObject({ entries: [] });
+    await expect(listEntries({ feedId: otherFeed.id, unreadOnly: true })).resolves.toMatchObject({
+      entries: [{ externalId: "three" }]
     });
   });
 });

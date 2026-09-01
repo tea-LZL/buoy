@@ -4,15 +4,17 @@ import {
   getEntry,
   listEntries,
   listFeeds,
+  markFeedRead,
   removeFeed,
   saveEntries,
   setEntryRead,
   updateFeed
 } from "../lib/database";
-import { FeedParseError, parseImport } from "../lib/feed-parser";
+import { FeedParseError, parseImport, serializeOpml } from "../lib/feed-parser";
 import type { Entry, EntryCursor, Feed } from "../types";
+import { shouldAnimateUnreadRemoval, shouldDeferUnreadReload, type ReaderView } from "./unread-preview";
 
-type View = "all" | "unread";
+type View = ReaderView;
 type Modal = "add" | "manage" | undefined;
 
 const root = document.querySelector<HTMLDivElement>("#app") as HTMLDivElement;
@@ -24,7 +26,8 @@ const state: {
   entries: Entry[];
   view: View;
   selectedFeedId?: string;
-  activeEntryId?: string;
+  activeEntry?: Entry;
+  removingEntryId?: string;
   cursor?: EntryCursor;
   hasMore: boolean;
   loading: boolean;
@@ -42,6 +45,10 @@ const state: {
 };
 
 let requestVersion = 0;
+let toastTimer: number | undefined;
+let toastExitTimer: number | undefined;
+let visibleNotice: string | undefined;
+let toastLeaving = false;
 
 root.addEventListener("click", (event) => {
   const target = (event.target as Element).closest<HTMLElement>("[data-action]");
@@ -77,8 +84,17 @@ root.addEventListener("drop", (event) => {
   if (file) void importFile(file);
 });
 
+root.addEventListener("error", (event) => {
+  const image = event.target;
+  if (image instanceof HTMLImageElement && image.classList.contains("source-thumbnail")) {
+    image.parentElement?.classList.add("has-image-error");
+  }
+}, true);
+
 browser.runtime.onMessage.addListener((message: unknown) => {
-  if (isDataChanged(message)) void reload(true);
+  if (isDataChanged(message) && !shouldDeferUnreadReload(state.view, state.activeEntry, state.removingEntryId)) {
+    void reload(true);
+  }
 });
 
 void reload(true);
@@ -110,9 +126,6 @@ async function reload(reset: boolean): Promise<void> {
     : undefined;
   state.hasMore = page.hasMore;
   state.loading = false;
-  if (state.activeEntryId && !state.entries.some((entry) => entry.id === state.activeEntryId)) {
-    state.activeEntryId = undefined;
-  }
   render();
 }
 
@@ -139,6 +152,10 @@ async function handleAction(target: HTMLElement): Promise<void> {
     render();
     return;
   }
+  if (action === "export-opml") {
+    exportOpml();
+    return;
+  }
   if (action === "open-manage") {
     state.modal = "manage";
     render();
@@ -159,14 +176,18 @@ async function handleAction(target: HTMLElement): Promise<void> {
     if (feedId) await refreshOne(feedId);
     return;
   }
+  if (action === "mark-feed-read") {
+    const feedId = target.dataset.feed;
+    if (feedId) await markSelectedFeedRead(feedId);
+    return;
+  }
   if (action === "select-entry") {
     const entryId = target.dataset.entry;
     if (entryId) await selectEntry(entryId);
     return;
   }
   if (action === "close-preview") {
-    state.activeEntryId = undefined;
-    render();
+    await closePreview();
     return;
   }
   if (action === "toggle-read") {
@@ -191,7 +212,7 @@ async function handleAction(target: HTMLElement): Promise<void> {
       render();
       await removeFeed(feedId);
       if (state.selectedFeedId === feedId) state.selectedFeedId = undefined;
-      if (activeEntry()?.feedId === feedId) state.activeEntryId = undefined;
+      if (activeEntry()?.feedId === feedId) state.activeEntry = undefined;
       state.notice = `${feed.title} removed.`;
       state.busy = false;
       await dataChanged();
@@ -201,14 +222,69 @@ async function handleAction(target: HTMLElement): Promise<void> {
 }
 
 async function selectEntry(entryId: string): Promise<void> {
-  state.activeEntryId = entryId;
   const entry = state.entries.find((item) => item.id === entryId) ?? (await getEntry(entryId));
-  if (entry && !entry.read) {
-    await setEntryRead(entry.id, true);
+  if (!entry) return;
+
+  state.activeEntry = entry;
+  const wasUnread = !entry.read;
+  if (wasUnread) {
     entry.read = true;
-    await dataChanged();
   }
   render();
+
+  if (wasUnread) {
+    await setEntryRead(entry.id, true);
+    await dataChanged();
+  }
+}
+
+async function closePreview(): Promise<void> {
+  const entry = state.activeEntry;
+  state.activeEntry = undefined;
+  const animateRemoval = shouldAnimateUnreadRemoval(state.view, entry);
+  if (animateRemoval && entry) state.removingEntryId = entry.id;
+  render();
+
+  if (!entry || state.view !== "unread") return;
+  try {
+    if (animateRemoval) await animateUnreadEntryRemoval(entry.id);
+    await reload(true);
+  } finally {
+    state.removingEntryId = undefined;
+  }
+}
+
+async function animateUnreadEntryRemoval(entryId: string): Promise<void> {
+  const card = Array.from(root.querySelectorAll<HTMLElement>("[data-entry-card]")).find(
+    (element) => element.dataset.entryCard === entryId
+  );
+  if (!card || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+  card.style.height = `${card.getBoundingClientRect().height}px`;
+  card.style.overflow = "hidden";
+  await nextFrame();
+  card.classList.add("is-leaving");
+  card.style.height = "0px";
+  await waitForRemovalTransition(card);
+}
+
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+function waitForRemovalTransition(element: HTMLElement): Promise<void> {
+  return new Promise((resolve) => {
+    const finish = () => {
+      element.removeEventListener("transitionend", onTransitionEnd);
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    const onTransitionEnd = (event: TransitionEvent) => {
+      if (event.target === element && event.propertyName === "height") finish();
+    };
+    const timeout = window.setTimeout(finish, 240);
+    element.addEventListener("transitionend", onTransitionEnd);
+  });
 }
 
 async function refreshAll(): Promise<void> {
@@ -236,6 +312,20 @@ async function refreshOne(feedId: string): Promise<void> {
   }
   state.busy = false;
   await reload(true);
+}
+
+async function markSelectedFeedRead(feedId: string): Promise<void> {
+  const feed = state.feeds.find((item) => item.id === feedId);
+  if (!feed) return;
+
+  state.busy = true;
+  render();
+  const updated = await markFeedRead(feedId);
+  state.notice = updated ? `${updated} post${updated === 1 ? "" : "s"} marked read.` : "No unread posts in this feed.";
+  state.busy = false;
+  await dataChanged();
+  if (shouldDeferUnreadReload(state.view, state.activeEntry, state.removingEntryId)) render();
+  else await reload(true);
 }
 
 async function addUrl(value: string): Promise<void> {
@@ -269,6 +359,7 @@ async function importFile(file: File): Promise<void> {
     const imported = parseImport(await file.text());
     if (imported.kind === "opml") {
       let added = 0;
+      let duplicates = 0;
       for (const subscription of imported.subscriptions) {
         const result = await createFeed({
           title: subscription.title || new URL(subscription.url).hostname,
@@ -277,13 +368,15 @@ async function importFile(file: File): Promise<void> {
           isLocal: false
         });
         if (result.created) added += 1;
+        else duplicates += 1;
       }
-      state.notice = `${added} feed${added === 1 ? "" : "s"} imported. Fetching updates...`;
+      const summary = `${added} feed${added === 1 ? "" : "s"} imported${duplicates ? `, ${duplicates} already saved` : ""}.`;
       state.modal = undefined;
       state.busy = false;
       await dataChanged();
-      if (added) await refreshAll();
-      else await reload(true);
+      if (added) await browser.runtime.sendMessage({ type: "refreshAll" });
+      state.notice = summary;
+      await reload(true);
       return;
     }
 
@@ -315,6 +408,30 @@ async function importFile(file: File): Promise<void> {
   }
 }
 
+function exportOpml(): void {
+  const subscriptions = state.feeds.filter((feed) => feed.url);
+  if (!subscriptions.length) {
+    state.notice = "No remote subscriptions to export.";
+    render();
+    return;
+  }
+
+  const file = new Blob([serializeOpml(subscriptions)], { type: "text/x-opml;charset=utf-8" });
+  const url = URL.createObjectURL(file);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `buoy-subscriptions-${new Date().toISOString().slice(0, 10)}.opml`;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+
+  const localSnapshots = state.feeds.length - subscriptions.length;
+  state.notice = `${subscriptions.length} subscription${subscriptions.length === 1 ? "" : "s"} exported${localSnapshots ? ". Local snapshots are not included" : "."}`;
+  render();
+}
+
 async function setNotifications(feedId: string, enabled: boolean): Promise<void> {
   if (enabled) {
     const alreadyAllowed = await browser.permissions.contains({ permissions: ["notifications"] });
@@ -338,22 +455,50 @@ async function dataChanged(): Promise<void> {
 }
 
 function activeEntry(): Entry | undefined {
-  return state.entries.find((entry) => entry.id === state.activeEntryId);
+  return state.activeEntry;
 }
 
 function render(): void {
+  scheduleToastDismissal();
   const markup = `
     <div class="app app--${surface}">
       ${renderSourceRail()}
       ${renderFeedColumn()}
       ${renderPreview()}
       ${state.modal ? renderModal() : ""}
-      ${state.notice ? `<div class="toast" role="status">${escapeHtml(state.notice)}</div>` : ""}
+      ${state.notice ? `<div class="toast ${toastLeaving ? "is-leaving" : ""}" role="status">${escapeHtml(state.notice)}</div>` : ""}
     </div>
   `;
   // Feed-derived values are escaped before detached parsing and DOM insertion.
   const parsedDocument = new DOMParser().parseFromString(markup, "text/html");
   root.replaceChildren(...Array.from(parsedDocument.body.childNodes));
+}
+
+function scheduleToastDismissal(): void {
+  if (!state.notice) {
+    window.clearTimeout(toastTimer);
+    window.clearTimeout(toastExitTimer);
+    visibleNotice = undefined;
+    toastLeaving = false;
+    return;
+  }
+  if (state.notice === visibleNotice) return;
+
+  window.clearTimeout(toastTimer);
+  window.clearTimeout(toastExitTimer);
+  visibleNotice = state.notice;
+  toastLeaving = false;
+  const notice = state.notice;
+  toastTimer = window.setTimeout(() => {
+    if (state.notice !== notice) return;
+    toastLeaving = true;
+    render();
+    toastExitTimer = window.setTimeout(() => {
+      if (state.notice !== notice) return;
+      state.notice = undefined;
+      render();
+    }, 180);
+  }, 2_000);
 }
 
 function renderSourceRail(): string {
@@ -381,6 +526,7 @@ function renderFeedColumn(): string {
     <section class="feed-column" aria-label="${escapeAttribute(title)}">
       <header class="topbar">
         <div class="compact-brand">${buoyMark()}<span>buoy</span></div>
+        <p class="refresh-hint">Buoy automatically refreshes every 15 minutes</p>
         <div class="sidebar-filter">
           <select name="feed-filter" aria-label="Filter by feed">
             <option value="">All sources</option>
@@ -397,7 +543,7 @@ function renderFeedColumn(): string {
           <p class="eyebrow">${state.view === "unread" ? "Read later" : "Your current"}</p>
           <h1>${escapeHtml(title)}</h1>
         </div>
-        ${selected ? `<button class="text-button" data-action="refresh-feed" data-feed="${escapeAttribute(selected.id)}" ${state.busy ? "disabled" : ""}>Refresh</button>` : ""}
+        ${selected ? `<div class="feed-heading-actions"><button class="feed-action-button feed-action--mark" data-action="mark-feed-read" data-feed="${escapeAttribute(selected.id)}" aria-label="Mark all read" ${state.busy ? "disabled" : ""}><span class="feed-action-label">Mark all read</span>${markAllReadIcon()}</button><button class="feed-action-button feed-action--refresh" data-action="refresh-feed" data-feed="${escapeAttribute(selected.id)}" aria-label="Refresh" ${state.busy ? "disabled" : ""}><span class="feed-action-label">Refresh</span>${refreshIcon()}</button></div>` : ""}
       </div>
       <div class="entry-list">
         ${renderEntries()}
@@ -428,11 +574,12 @@ function renderEntries(): string {
 
 function renderEntryCard(entry: Entry): string {
   const feed = state.feeds.find((item) => item.id === entry.feedId);
+  const active = entry.id === state.activeEntry?.id ? "is-active" : "";
   const image = entry.imageUrl
     ? `<img class="entry-image" src="${escapeAttribute(entry.imageUrl)}" alt="" loading="lazy" />`
     : "";
   return `
-    <article class="entry-card ${entry.read ? "is-read" : "is-unread"}">
+    <article class="entry-card ${entry.read ? "is-read" : "is-unread"} ${active}" data-entry-card="${escapeAttribute(entry.id)}">
       <button class="entry-hit" data-action="select-entry" data-entry="${escapeAttribute(entry.id)}" aria-label="Open ${escapeAttribute(entry.title)}">
         <div class="entry-meta">
           ${sourceMark(feed)}
@@ -494,6 +641,10 @@ function renderModal(): string {
     return `
       <div class="modal-backdrop" role="presentation"><section class="modal" role="dialog" aria-modal="true" aria-label="Manage feeds">
         <header><div><p class="eyebrow">Sources</p><h2>Manage feeds</h2></div><button class="icon-button" data-action="close-modal" aria-label="Close">${closeIcon()}</button></header>
+        <div class="migration-actions">
+          <button class="text-button" data-action="open-add">Import OPML</button>
+          <button class="text-button" data-action="export-opml">Export OPML</button>
+        </div>
         <div class="manage-list">
           ${state.feeds.length ? state.feeds.map(renderManageFeed).join("") : `<p class="quiet">No feeds added yet.</p>`}
         </div>
@@ -543,8 +694,10 @@ function renderLoadingCards(): string {
 }
 
 function sourceMark(feed?: Feed): string {
-  const label = (feed?.title || "B").trim().slice(0, 1).toUpperCase();
-  return `<span class="source-mark" aria-hidden="true">${escapeHtml(label)}</span>`;
+  const thumbnail = feed?.iconUrl
+    ? `<img class="source-thumbnail" src="${escapeAttribute(feed.iconUrl)}" alt="" loading="lazy" />`
+    : "";
+  return `<span class="source-mark ${thumbnail ? "has-thumbnail" : ""}" aria-hidden="true">${thumbnail}<span class="source-fallback">${rssIcon()}</span></span>`;
 }
 
 function formatDate(timestamp: number): string {
@@ -594,10 +747,12 @@ function buoyMark(): string {
 }
 
 function plusIcon(): string { return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`; }
-function refreshIcon(): string { return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0 2 5.3M20 4v7h-7"/></svg>`; }
+function refreshIcon(): string { return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.5 9A7 7 0 0 0 6.5 7M18.5 5v4h-4M5.5 15a7 7 0 0 0 12 2M5.5 19v-4h4"/></svg>`; }
+function markAllReadIcon(): string { return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 12 3 3 5-6M10 14l2 2 6-7"/></svg>`; }
 function settingsIcon(): string { return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4ZM19.4 13.3v-2.6l-2-.5a6.7 6.7 0 0 0-.7-1.6l1.1-1.8L16 5l-1.8 1.1a6.7 6.7 0 0 0-1.6-.7l-.5-2H9.5l-.5 2a6.7 6.7 0 0 0-1.6.7L5.6 5 3.8 6.8l1.1 1.8a6.7 6.7 0 0 0-.7 1.6l-2 .5v2.6l2 .5a6.7 6.7 0 0 0 .7 1.6l-1.1 1.8L5.6 19l1.8-1.1a6.7 6.7 0 0 0 1.6.7l.5 2h2.6l.5-2a6.7 6.7 0 0 0 1.6-.7L16 19l1.8-1.8-1.1-1.8a6.7 6.7 0 0 0 .7-1.6l2-.5Z"/></svg>`; }
 function allIcon(): string { return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>`; }
 function dotIcon(): string { return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5" fill="currentColor" stroke="none"/></svg>`; }
+function rssIcon(): string { return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="18" r="1.6" fill="currentColor" stroke="none"/><path d="M5 11a8 8 0 0 1 8 8M5 5a14 14 0 0 1 14 14"/></svg>`; }
 function backIcon(): string { return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5-7 7 7 7M7 12h12"/></svg>`; }
 function closeIcon(): string { return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>`; }
 function readIcon(): string { return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>`; }

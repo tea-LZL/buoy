@@ -1,4 +1,4 @@
-import type { OpmlSubscription, ParsedEntry, ParsedFeed, ParsedImport } from "../types";
+import type { Feed, OpmlSubscription, ParsedEntry, ParsedFeed, ParsedImport } from "../types";
 
 const MAX_TEXT_LENGTH = 12_000;
 
@@ -28,6 +28,32 @@ export function parseImport(xml: string, sourceUrl?: string): ParsedImport {
   throw new FeedParseError("This file is not a supported RSS, Atom, or OPML document.");
 }
 
+export function serializeOpml(feeds: ReadonlyArray<Pick<Feed, "title" | "url" | "siteUrl">>): string {
+  const outlines = feeds
+    .filter((feed): feed is Pick<Feed, "title" | "url" | "siteUrl"> & { url: string } => Boolean(feed.url))
+    .map((feed) => {
+      const attributes = [
+        'type="rss"',
+        `text="${escapeXml(feed.title || "Untitled feed")}"`,
+        `title="${escapeXml(feed.title || "Untitled feed")}"`,
+        `xmlUrl="${escapeXml(feed.url)}"`
+      ];
+      if (feed.siteUrl) attributes.push(`htmlUrl="${escapeXml(feed.siteUrl)}"`);
+      return `    <outline ${attributes.join(" ")} />`;
+    });
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<opml version="2.0">',
+    "  <head><title>Buoy subscriptions</title></head>",
+    "  <body>",
+    ...outlines,
+    "  </body>",
+    "</opml>",
+    ""
+  ].join("\n");
+}
+
 function parseXml(xml: string): XMLDocument {
   const document = new DOMParser().parseFromString(xml, "application/xml");
   if (
@@ -48,7 +74,8 @@ function parseRss(root: Element, sourceUrl?: string): ParsedFeed {
   const image = directChild(context, "image");
   const iconUrl =
     safeUrl(textOf(image, "url"), sourceUrl) ??
-    safeUrl(attributeOf(descendant(context, "image"), "href"), sourceUrl);
+    safeUrl(attributeOf(directChildWithAttribute(context, "image", "href"), "href"), sourceUrl) ??
+    safeUrl(attributeOf(directChildWithAttribute(context, "thumbnail", "url"), "url"), sourceUrl);
   const description = normalizeText(textOf(context, "description") || textOf(context, "subtitle"));
   const items = directChildren(context, "item").length
     ? directChildren(context, "item")
@@ -129,7 +156,7 @@ function parseOpml(root: Element): OpmlSubscription[] {
         if (!subscriptions.has(url)) {
           subscriptions.set(url, {
             url,
-            title: normalizeText(attributeOf(outline, "title") || attributeOf(outline, "text")) || undefined,
+            title: normalizeAttributeText(attributeOf(outline, "title") || attributeOf(outline, "text")) || undefined,
             siteUrl: safeUrl(attributeOf(outline, "htmlUrl") || attributeOf(outline, "htmlurl"))
           });
         }
@@ -190,6 +217,10 @@ function descendant(element: Element | undefined, name: string): Element | undef
     Array.from(element.getElementsByTagName(name))[0];
 }
 
+function directChildWithAttribute(element: Element | undefined, name: string, attribute: string): Element | undefined {
+  return element ? directChildren(element, name).find((child) => child.hasAttribute(attribute)) : undefined;
+}
+
 function textOf(element: Element | undefined, name: string): string {
   return directChild(element, name)?.textContent?.trim() || "";
 }
@@ -202,6 +233,10 @@ function normalizeText(value: string | undefined): string {
   if (!value) return "";
   const document = new DOMParser().parseFromString(value, "text/html");
   return (document.body.textContent || "").replace(/\s+/g, " ").trim().slice(0, MAX_TEXT_LENGTH);
+}
+
+function normalizeAttributeText(value: string | undefined): string {
+  return value?.replace(/\s+/g, " ").trim().slice(0, MAX_TEXT_LENGTH) || "";
 }
 
 function parseDate(value: string): number {
@@ -225,4 +260,14 @@ function hostName(value?: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function escapeXml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&apos;"
+  })[character]!);
 }

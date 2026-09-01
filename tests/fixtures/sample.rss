@@ -5,6 +5,7 @@
     <link>https://notes.example/</link>
     <description>Small observations.</description>
     <atom:link href="https://notes.example/feed.xml" rel="self" type="application/rss+xml" />
+    <image><url>/images/channel-icon.png</url></image>
     <item>
       <guid>notes-001</guid>
       <title><![CDATA[<strong>First light</strong>]]></title>
