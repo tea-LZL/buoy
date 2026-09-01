@@ -1,5 +1,5 @@
 import { listEntries } from "./lib/database";
-import { refreshAll, refreshFeed } from "./lib/feed-service";
+import { rebuildCache, refreshAll, refreshFeed } from "./lib/feed-service";
 import type { RefreshResult } from "./types";
 
 const REFRESH_ALARM = "buoy:refresh";
@@ -26,6 +26,7 @@ browser.runtime.onMessage.addListener((message: unknown) => {
   if (!isMessage(message)) return undefined;
   if (message.type === "refreshAll") return refreshAndSignal();
   if (message.type === "refreshFeed" && message.feedId) return refreshOneAndSignal(message.feedId);
+  if (message.type === "rebuildCache") return rebuildCacheAndSignal();
   if (message.type === "dataChanged" && message.source !== "background") {
     return updateBadge().then(signalDataChanged);
   }
@@ -51,6 +52,13 @@ async function refreshOneAndSignal(feedId: string): Promise<RefreshResult> {
   await updateBadge();
   await signalDataChanged();
   return result;
+}
+
+async function rebuildCacheAndSignal() {
+  const summary = await rebuildCache();
+  await updateBadge();
+  await signalDataChanged();
+  return summary;
 }
 
 async function updateBadge(): Promise<void> {

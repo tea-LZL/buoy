@@ -103,6 +103,44 @@ export async function saveEntries(feedId: string, parsedEntries: ParsedEntry[]):
   return added;
 }
 
+export async function replaceEntries(feedId: string, parsedEntries: ParsedEntry[]): Promise<Entry[]> {
+  const database = await openDatabase();
+  const transaction = database.transaction("entries", "readwrite");
+  const store = transaction.objectStore("entries");
+  const index = store.index("byFeedPublishedKey");
+  const range = IDBKeyRange.bound([feedId, 0, ""], [feedId, MAX_TIME, "\uffff"]);
+  const cachedEntries = await request<Entry[]>(index.getAll(range));
+  const cachedById = new Map(cachedEntries.map((entry) => [entry.id, entry]));
+  const createdAt = Date.now();
+  const rebuiltEntries = parsedEntries.map((parsed) => {
+    const id = entryKey(feedId, parsed.externalId);
+    const cached = cachedById.get(id);
+    return {
+      id,
+      feedId,
+      externalId: parsed.externalId,
+      title: parsed.title,
+      url: parsed.url,
+      author: parsed.author,
+      content: parsed.content,
+      imageUrl: parsed.imageUrl,
+      publishedAt: parsed.publishedAt,
+      read: cached?.read ?? false,
+      createdAt: cached?.createdAt ?? createdAt
+    };
+  });
+  const retainedEntries = retainNewest(rebuiltEntries);
+  const retainedIds = new Set(retainedEntries.map((entry) => entry.id));
+
+  for (const cached of cachedEntries) {
+    if (!retainedIds.has(cached.id)) store.delete(cached.id);
+  }
+  for (const entry of retainedEntries) store.put(entry);
+
+  await complete(transaction);
+  return retainedEntries.filter((entry) => !cachedById.has(entry.id));
+}
+
 export async function listEntries(options: {
   feedId?: string;
   unreadOnly?: boolean;
