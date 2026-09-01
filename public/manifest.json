@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Buoy",
+  "version": "0.1.0",
+  "description": "A private, minimal RSS reader.",
+  "icons": {
+    "48": "icons/buoy.svg",
+    "96": "icons/buoy.svg"
+  },
+  "action": {
+    "default_title": "Open Buoy",
+    "default_icon": "icons/buoy.svg"
+  },
+  "background": {
+    "scripts": ["background.js"],
+    "type": "module"
+  },
+  "sidebar_action": {
+    "default_title": "Buoy",
+    "default_panel": "sidebar.html",
+    "default_icon": "icons/buoy.svg",
+    "open_at_install": false
+  },
+  "permissions": ["alarms"],
+  "host_permissions": ["<all_urls>"],
+  "optional_permissions": ["notifications"],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "buoy@tea.dev",
+      "data_collection_permissions": {
+        "required": ["none"]
+      },
+      "strict_min_version": "142.0"
+    }
+  }
+}

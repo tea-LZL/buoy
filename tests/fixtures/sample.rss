@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:media="http://search.yahoo.com/mrss/">
+  <channel>
+    <title>City Notes</title>
+    <link>https://notes.example/</link>
+    <description>Small observations.</description>
+    <atom:link href="https://notes.example/feed.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <guid>notes-001</guid>
+      <title><![CDATA[<strong>First light</strong>]]></title>
+      <link>/first-light</link>
+      <pubDate>Tue, 01 Sep 2026 09:00:00 GMT</pubDate>
+      <content:encoded><![CDATA[<p>Hello <em>friends</em>.</p><script>bad()</script>]]></content:encoded>
+      <media:thumbnail url="/images/first.jpg" />
+    </item>
+    <item>
+      <guid>notes-001</guid>
+      <title>Duplicate should be ignored</title>
+    </item>
+  </channel>
+</rss>

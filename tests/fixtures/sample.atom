@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Signal Field</title>
+  <subtitle>Tools and thinking.</subtitle>
+  <link rel="alternate" href="https://field.example/" />
+  <link rel="self" href="https://field.example/atom.xml" />
+  <icon>https://field.example/icon.png</icon>
+  <entry>
+    <id>tag:field.example,2026:alpha</id>
+    <title>Alpha release</title>
+    <published>2026-09-01T08:30:00Z</published>
+    <link href="/alpha" />
+    <author><name>Ada Lovelace</name></author>
+    <summary><![CDATA[<p>A concise <b>summary</b>.</p>]]></summary>
+  </entry>
+</feed>

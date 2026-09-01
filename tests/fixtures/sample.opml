@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head><title>Subscriptions</title></head>
+  <body>
+    <outline text="Reading">
+      <outline text="City Notes" title="City Notes" type="rss" xmlUrl="https://notes.example/feed.xml" htmlUrl="https://notes.example/" />
+      <outline text="Nested">
+        <outline text="Signal Field" type="rss" xmlUrl="https://field.example/atom.xml" />
+        <outline text="Duplicate" type="rss" xmlUrl="https://notes.example/feed.xml" />
+      </outline>
+    </outline>
+  </body>
+</opml>
