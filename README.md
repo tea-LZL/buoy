@@ -7,6 +7,7 @@ Private, minimal Firefox desktop RSS reader. Buoy reads RSS, Atom, and OPML loca
 - Add remote feed URLs or import `.rss`, `.xml`, `.atom`, and `.opml` files.
 - Bulk migrate subscriptions through standard OPML import and export.
 - Refresh URL feeds every 15 minutes and retain latest 200 posts per feed.
+- Rebuild the feed cache from the Manage feeds dialog: force fresh downloads for every remote feed, replace each feed's cached posts with the current response, and preserve read state for matching posts.
 - Open full reader from toolbar or use Firefox sidebar.
 - Inline plain-text previews, read state, and per-feed optional notifications.
 - Local IndexedDB storage and safe HTTP(S)-only feed links/media.

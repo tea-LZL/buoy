@@ -11,7 +11,7 @@ import {
   updateFeed
 } from "../lib/database";
 import { FeedParseError, parseImport, serializeOpml } from "../lib/feed-parser";
-import type { Entry, EntryCursor, Feed } from "../types";
+import type { CacheRebuildSummary, Entry, EntryCursor, Feed } from "../types";
 import { shouldAnimateUnreadRemoval, shouldDeferUnreadReload, type ReaderView } from "./unread-preview";
 
 type View = ReaderView;
@@ -171,6 +171,10 @@ async function handleAction(target: HTMLElement): Promise<void> {
     await refreshAll();
     return;
   }
+  if (action === "rebuild-cache") {
+    await rebuildCachedFeeds();
+    return;
+  }
   if (action === "refresh-feed") {
     const feedId = target.dataset.feed;
     if (feedId) await refreshOne(feedId);
@@ -296,6 +300,28 @@ async function refreshAll(): Promise<void> {
     state.notice = "Feeds refreshed.";
   } catch {
     state.notice = "Could not refresh feeds.";
+  }
+  state.busy = false;
+  await reload(true);
+}
+
+async function rebuildCachedFeeds(): Promise<void> {
+  const remoteFeeds = state.feeds.filter((feed) => feed.url);
+  if (!remoteFeeds.length) {
+    state.notice = "No remote feeds to rebuild.";
+    render();
+    return;
+  }
+  if (!window.confirm("Clear cached posts and refresh all remote feeds now? Posts absent from fresh responses will be removed. Read state is preserved for matching posts.")) return;
+
+  state.busy = true;
+  state.notice = "Clearing cache and refreshing feeds...";
+  render();
+  try {
+    const summary = await browser.runtime.sendMessage({ type: "rebuildCache" }) as CacheRebuildSummary;
+    state.notice = formatCacheRebuildSummary(summary);
+  } catch {
+    state.notice = "Could not rebuild feed cache.";
   }
   state.busy = false;
   await reload(true);
@@ -644,6 +670,7 @@ function renderModal(): string {
         <div class="migration-actions">
           <button class="text-button" data-action="open-add">Import OPML</button>
           <button class="text-button" data-action="export-opml">Export OPML</button>
+          <button class="text-button" data-action="rebuild-cache" ${state.busy ? "disabled" : ""}>Clear cache &amp; refresh</button>
         </div>
         <div class="manage-list">
           ${state.feeds.length ? state.feeds.map(renderManageFeed).join("") : `<p class="quiet">No feeds added yet.</p>`}
@@ -720,6 +747,12 @@ function compactHost(url?: string): string {
   } catch {
     return "Local file";
   }
+}
+
+function formatCacheRebuildSummary(summary: CacheRebuildSummary): string {
+  if (!summary.refreshed && !summary.failed) return "No remote feeds to rebuild.";
+  const refreshed = `${summary.refreshed} feed${summary.refreshed === 1 ? "" : "s"} refreshed`;
+  return summary.failed ? `${refreshed}, ${summary.failed} failed.` : `${refreshed}.`;
 }
 
 function clamp(value: string, length: number): string {

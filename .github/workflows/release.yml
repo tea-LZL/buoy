@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-master
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run package
+      - run: npm run lint
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          SHA="${GITHUB_SHA::7}"
+          TAG="v${VERSION}-${SHA}"
+          ZIP="web-ext-artifacts/buoy-${VERSION}.zip"
+          ASSET="web-ext-artifacts/buoy-${VERSION}-${SHA}.zip"
+          cp "$ZIP" "$ASSET"
+          gh release create "$TAG" "$ASSET" \
+            --title "Buoy ${VERSION} (${SHA})" \
+            --generate-notes \
+            --target "$GITHUB_SHA"

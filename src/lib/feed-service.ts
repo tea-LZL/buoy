@@ -1,19 +1,24 @@
-import { getFeed, listFeeds, saveEntries, updateFeed } from "./database";
+import { getFeed, listFeeds, replaceEntries, saveEntries, updateFeed } from "./database";
 import { parseImport } from "./feed-parser";
-import type { Feed, RefreshResult } from "../types";
+import type { CacheRebuildSummary, Feed, RefreshResult } from "../types";
 
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_FEED_BYTES = 10 * 1024 * 1024;
 const REFRESH_CONCURRENCY = 3;
 
-export async function refreshFeed(feedId: string): Promise<RefreshResult> {
+interface RefreshOptions {
+  force?: boolean;
+  replaceCache?: boolean;
+}
+
+export async function refreshFeed(feedId: string, options: RefreshOptions = {}): Promise<RefreshResult> {
   const feed = await getFeed(feedId);
   if (!feed) throw new Error("Feed not found.");
   const hadPreviousFetch = Boolean(feed.lastFetchedAt);
   if (!feed.url) return { feed, addedEntries: [], unchanged: true, hadPreviousFetch };
 
   try {
-    const response = await fetchFeed(feed);
+    const response = await fetchFeed(feed, options.force);
     const fetchedAt = Date.now();
     if (response.status === 304) {
       return {
@@ -29,7 +34,9 @@ export async function refreshFeed(feedId: string): Promise<RefreshResult> {
 
     const parsed = parseImport(await response.text(), response.url || feed.url);
     if (parsed.kind !== "feed") throw new Error("This URL returned OPML, not a feed.");
-    const addedEntries = await saveEntries(feed.id, parsed.feed.entries);
+    const addedEntries = options.replaceCache
+      ? await replaceEntries(feed.id, parsed.feed.entries)
+      : await saveEntries(feed.id, parsed.feed.entries);
     const updated = await updateFeed(feed.id, {
       title: parsed.feed.title || feed.title,
       url: response.url || feed.url,
@@ -51,29 +58,42 @@ export async function refreshFeed(feedId: string): Promise<RefreshResult> {
 }
 
 export async function refreshAll(): Promise<RefreshResult[]> {
-  const feeds = (await listFeeds()).filter((feed) => feed.url);
+  return refreshFeeds((await listFeeds()).filter((feed) => feed.url));
+}
+
+export async function rebuildCache(): Promise<CacheRebuildSummary> {
+  const results = await refreshFeeds((await listFeeds()).filter((feed) => feed.url), {
+    force: true,
+    replaceCache: true
+  });
+  const failed = results.filter((result) => Boolean(result.feed.lastError)).length;
+  return { refreshed: results.length - failed, failed };
+}
+
+async function refreshFeeds(feeds: Feed[], options: RefreshOptions = {}): Promise<RefreshResult[]> {
   const results: RefreshResult[] = [];
   let index = 0;
 
   const workers = Array.from({ length: Math.min(REFRESH_CONCURRENCY, feeds.length) }, async () => {
     while (index < feeds.length) {
       const feed = feeds[index++];
-      results.push(await refreshFeed(feed.id));
+      results.push(await refreshFeed(feed.id, options));
     }
   });
   await Promise.all(workers);
   return results;
 }
 
-async function fetchFeed(feed: Feed): Promise<Response> {
+async function fetchFeed(feed: Feed, force = false): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const headers = new Headers({ Accept: "application/atom+xml, application/rss+xml, application/xml, text/xml" });
-    if (feed.etag) headers.set("If-None-Match", feed.etag);
-    if (feed.lastModified) headers.set("If-Modified-Since", feed.lastModified);
+    if (!force && feed.etag) headers.set("If-None-Match", feed.etag);
+    if (!force && feed.lastModified) headers.set("If-Modified-Since", feed.lastModified);
     return await fetch(feed.url!, {
       headers,
+      cache: force ? "no-store" : "default",
       credentials: "omit",
       redirect: "follow",
       signal: controller.signal

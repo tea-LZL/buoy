@@ -74,3 +74,8 @@ export interface RefreshResult {
   unchanged: boolean;
   hadPreviousFetch: boolean;
 }
+
+export interface CacheRebuildSummary {
+  refreshed: number;
+  failed: number;
+}
