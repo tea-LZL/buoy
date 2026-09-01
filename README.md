@@ -27,6 +27,14 @@ buoy does NOT do any syncs. If you are migrating to a different machine and want
 
 Imported files without a feed self-link become local snapshots. OPML imports and exports remote subscription URLs; local snapshots, cached posts, read state, and notification preferences stay in Buoy.
 
+### Main:
+![Dashboard preview](assets/main_content.png)
+
+![Dashboard preview](assets/main_empty.png)
+
+### Sidebar
+![Dashboard preview](assets/sidebar.png)
+
 ## Development
 
 ```bash
