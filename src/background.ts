@@ -1,3 +1,4 @@
+import { applyActionBadge, unreadBadgeText } from "./lib/action-badge";
 import { listEntries } from "./lib/database";
 import { rebuildCache, refreshAll, refreshFeed } from "./lib/feed-service";
 import type { RefreshResult } from "./types";
@@ -63,9 +64,7 @@ async function rebuildCacheAndSignal() {
 
 async function updateBadge(): Promise<void> {
   const { entries } = await listEntries({ unreadOnly: true, limit: 1_000 });
-  const text = entries.length ? (entries.length > 99 ? "99+" : String(entries.length)) : "";
-  await browser.action.setBadgeBackgroundColor({ color: "#fa5b85" });
-  await browser.action.setBadgeText({ text });
+  await applyActionBadge(unreadBadgeText(entries.length), browser.action, browser.tabs);
 }
 
 async function notifyNewEntries(results: RefreshResult[]): Promise<void> {
